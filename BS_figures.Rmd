@@ -1,0 +1,1862 @@
+---
+title: "BS_figures"
+author: "Dr. Burchfield"
+output: html_document
+---
+
+# Load results and data
+
+```{r message=F, warning=F}
+library(ggpubr)
+library(RColorBrewer)
+library(knitr)
+
+source("BS_load.R")
+source("BS_func.R")
+
+mcorn <- readRDS("./out/models/mf_corn.RDS")
+dcorn <- readRDS("./out/models/df_corn.RDS")
+
+msoy <- readRDS("./out/models/mf_soy.RDS")
+dsoy <- readRDS("./out/models/df_soy.RDS")
+
+mwwheat <- readRDS("./out/models/mf_wwheat.RDS")
+dwwheat <- readRDS("./out/models/df_wwheat.RDS")
+
+malfalfa <- readRDS("./out/models/mf_alfalfa.RDS")
+dalfalfa <- readRDS("./out/models/df_alfalfa.RDS")
+
+mhay <- readRDS("./out/models/mf_hay.RDS")
+dhay <- readRDS("./out/models/df_hay.RDS")
+
+#https://www.nature.com/articles/nmeth.1618
+wong_colors <- c("#E69F00", "#e34234", "#009E73", "#F0E442", "#0072B2")
+crops <- as.factor(c("corn", "soy", "wwheat", "alfalfa", "hay"))
+clean_crops <- as.factor(c("Corn", "Soy", "Winter wheat", "Alfalfa", "Hay"))
+names(wong_colors) <- clean_crops
+colors_f <- scale_fill_manual(name = "CROPS", values = wong_colors)
+colors_c <- scale_color_manual(name = "CROPS", values = wong_colors)
+
+mlist <- list(mcorn, msoy, mwwheat, malfalfa, mhay)
+
+dflist <- list()
+
+for (i in 1:length(crops)) {
+  
+  crop <- crops[[i]]
+  out <- prep_data(crop, scale = T)
+  county_sub <- out[[2]] 
+  df <- prep_attr_data(crop, scale = F)
+  st_geometry(df) <- NULL
+  df$CROP <- crop
+  df$CCROP <- clean_crops[[i]]
+  df$PROP_CROP <- df$PERC_CROP/100
+  dflist[[i]] <- df
+  
+}
+
+df <- do.call("rbind.data.frame", dflist)
+df <- merge(county, df, by = "GEOID", all = T)
+
+df$BS <- ifelse(df$DIFF > mean(df$DIFF, na.rm=T) + 1*sd(df$DIFF, na.rm=T), "> 1 sd", NA)
+df$BS[df$DIFF < mean(df$DIFF, na.rm=T) - 1*sd(df$DIFF, na.rm=T)] <- "< 1 sd"
+df$BS[is.na(df$DIFF)] <- "Average spot"
+
+race <- readRDS("./out/race.RDS") %>% filter(YEAR %in% c(2012, 2017))
+race <- race %>% group_by(GEOID) %>% summarize_all(funs(mean), na.rm=T)
+race[race == "NaN"] <- NA
+
+df$PROP_CROP[is.na(df$PROP_CROP)] <- 0
+df2 <- merge(df, race, by = "GEOID", all = T)
+df2$WD <-df2$DIFF * df2$PROP_CROP
+
+# ACROSS crop bright spots
+dfs <- df2 %>%
+  group_by(GEOID) %>%
+  summarize(N = sum(PROP_CROP, na.rm=T),
+    #N = length(DIFF[!is.na(DIFF)]),
+            TOTAL = sum(WD, na.rm=T)) %>%
+  mutate(WAVG = TOTAL/N)
+dfa <-  df2 %>%
+    select(-c(geometry, WD, PROP_CROP, CROP, CCROP, Z, DIFF, STATEFP, FRR.x, FRR.y)) %>% # remove null model attr
+    group_by(GEOID) %>% 
+    summarize_all(funs(mean), na.rm=T)
+st_geometry(dfa) <- NULL
+dfa[dfa == "NaN"] <- NA
+
+dfs <- merge(dfs, dfa, by = "GEOID", all = T)
+dfs$BS <- ifelse(dfs$WAVG > mean(dfs$WAVG, na.rm=T) + 1*sd(dfs$WAVG, na.rm=T), "> 1 sd", NA)
+dfs$BS[dfs$WAVG < mean(dfs$WAVG, na.rm=T) - 1*sd(dfs$WAVG, na.rm=T)] <- "< 1 sd"
+dfs$BS[is.na(dfs$BS)] <- "Average spot"
+dfs$BS <- as.factor(dfs$BS)
+
+library(reshape2)
+library(scales)
+
+# scale dfs
+dfscale <- dfs %>% select(-c(GEOID, BS, N, TOTAL, WAVG))
+st_geometry(dfscale) <- NULL
+dfscale <- as.data.frame(scale(dfscale)) 
+dfscale <- cbind.data.frame(dfs %>% select(c(GEOID, BS, N, TOTAL, WAVG)), dfscale)
+```
+
+***
+
+# Figure 1: Nonlinear yield responses
+
+```{r}
+t <- prep_data("corn", scale=F)[[1]]
+mgdd <- mean(t$GDD, na.rm=T)
+sgdd <- sd(t$GDD, na.rm=T)
+mtp <- mean(t$TP, na.rm=T)
+stp <- sd(t$TP, na.rm=T)
+
+crops <-crops[!crops %in% c("sorghum", "cotton")]
+clean_crops <- clean_crops[!clean_crops %in% c("Sorghum", "Cotton")]
+
+plot_nle <- function(variable, m, s) {
+  
+  out_list <- list()
+  for (i in 1:length(crops)) {
+
+    df <- mlist[[i]]$summary.random[[variable]][,c(1,4:6)]
+    df$CROPS <- crops[[i]]
+    df$CROP_NAME <- clean_crops[[i]]
+    out_list[[i]] <- df
+    
+  }
+  nle <- do.call("rbind.data.frame", out_list)
+  nle$ID2 <- nle$ID
+  nle$ID <- (nle$ID * s) + m
+  
+  plt <- ggplot(data = nle) + 
+    geom_line(aes(x = ID, y = `0.5quant`, group = CROP_NAME)) +
+    geom_ribbon(aes(x = ID, y = `0.5quant`, ymin = `0.025quant`, ymax = `0.975quant`, fill = CROP_NAME), alpha = 0.7) +
+    project_theme +
+    colors_f +
+    labs(x = variable, 
+         y = "Standardized yield effect") +
+    theme(legend.title = element_blank())
+  
+  return(plt)
+  
+}
+
+library(ggpubr)
+gdd <- plot_nle("GDD", mgdd, sgdd) + xlab("Growing degree days (°C)") + theme(text = element_text(size = 20),
+                                                                              axis.text = element_text(size = 18)
+                                                                              ) + ylim(c(-2, 1))+ theme(legend.text=element_text(size=18))
+tp <- plot_nle("TP", mtp, stp) + xlab("Total precipitation (mm)") + ylab("") + theme(text = element_text(size = 20),
+                                                                              axis.text = element_text(size = 18),
+                                                                                     legend.position = "none") + ylim(c(-2,1)) +  theme(legend.text=element_text(size=18))
+
+ggarrange(gdd, tp, labels = c("A", "B"), ncol = 2, nrow = 1, common.legend = T, legend = "bottom", font.label = list(size = 24))
+ggsave("./figs/nonlinear_climate.png", plot = last_plot(), width = 18, height = 8)
+```
+
+
+# Figure 2: Regression coefficients 
+
+```{r echo=F}
+plot_all_coef <- function(mlist) {
+  
+  out <- list()
+  
+  for (i in 1:length(mlist)) {
+    
+    model <- mlist[[i]]
+    coef <- model$summary.fixed[,c(1, 3, 5)] # mean, 0.025, 0.985
+    colnames(coef) <- c("MEAN", "LOW", "HIGH")
+    coef$VARS <- rownames(coef)
+    coef <- coef %>% filter(VARS != "(Intercept)")
+    # drop year factors for now and intercept
+    # coef <- coef[2:9,]
+    coef$CROP <- clean_crops[i]
+    out[[i]] <- coef
+  
+    
+    
+  }
+  
+  out <- do.call("rbind.data.frame", out)
+  out$VOI <- NA
+  out$VOI[out$VARS == "PERC_IRR"] <- "% ag. land irrigated"
+  out$VOI[out$VARS == "PERC_AG"] <- "% agricultural land"
+  out$VOI[out$VARS == "T_CEC_SOIL"] <- "Cation exchange capacity"
+  out$VOI[out$VARS == "T_OC"] <- "Topsoil organic carbon"
+  out$VOI[out$VARS == "T_PH_H2O"] <- "Topsoil pH"
+  out$VOI[out$VARS == "T_ESP"] <- "Topsoil sodicity"
+  out$VOI[out$VARS == "factor(YEAR)2009"] <- "y2009"
+  out$VOI[out$VARS == "factor(YEAR)2010"] <- "y2010"
+  out$VOI[out$VARS == "factor(YEAR)2011"] <- "y2011"
+  out$VOI[out$VARS == "factor(YEAR)2012"] <- "y2012"
+  out$VOI[out$VARS == "factor(YEAR)2013"] <- "y2013"
+  out$VOI[out$VARS == "factor(YEAR)2014"] <- "y2014"
+  out$VOI[out$VARS == "factor(YEAR)2015"] <- "y2015"
+  out$VOI[out$VARS == "factor(YEAR)2016"] <- "y2016"
+  out$VOI[out$VARS == "factor(YEAR)2017"] <- "y2017"
+  out$VOI[out$VARS == "factor(YEAR)2018"] <- "y2018"
+  
+  ggplot(out %>% filter(!VARS %in% c("(Intercept)"), 
+                        !VOI %in% c("y2009", "y2010", "y2011", "y2012", "y2013", "y2014", "y2015", "y2016", "y2017", "y2018"))) +
+    geom_errorbarh(height = 0, aes(xmin = LOW, xmax = HIGH, 
+                                   y = reorder(VOI, LOW), color = CROP), position = position_dodge(width = 0.3)) +
+    project_theme +
+    geom_point(aes(x = MEAN, y = reorder(VOI, LOW), color = CROP), size = 2, alpha = 0.8, 
+               position = position_dodge(width = 0.3)) +
+    geom_vline(xintercept = 0) +
+    labs(x = "",
+         y = "",
+         color = "") +
+    colors_c +
+  theme(legend.position = "right",
+        legend.title = element_blank()) 
+  
+  
+}
+
+coef <- plot_all_coef(mlist) + theme(text = element_text(size = 12),
+                                     axis.text = element_text(size = 12),
+                                     legend.text = element_text(size=12))
+# ggsave("./figs/coefficients_notime.png", width = 7, height = 3)
+```
+
+```{r echo=F}
+plot_all_coef <- function(mlist) {
+  
+  out <- list()
+  
+  for (i in 1:length(mlist)) {
+    
+    model <- mlist[[i]]
+    coef <- model$summary.fixed[,c(1, 3, 5)] # mean, 0.025, 0.985
+    colnames(coef) <- c("MEAN", "LOW", "HIGH")
+    coef$VARS <- rownames(coef)
+    coef <- coef %>% filter(VARS != "(Intercept)")
+    # drop year factors for now and intercept
+    # coef <- coef[2:9,]
+    coef$CROP <- clean_crops[i]
+    out[[i]] <- coef
+  
+    
+    
+  }
+  
+  out <- do.call("rbind.data.frame", out)
+  out$VOI <- NA
+  out$VOI[out$VARS == "PERC_IRR"] <- "% ag. land irrigated"
+  out$VOI[out$VARS == "PERC_AG"] <- "% agricultural land"
+  out$VOI[out$VARS == "T_CEC_SOIL"] <- "Cation exchange capacity"
+  out$VOI[out$VARS == "T_OC"] <- "Topsoil organic carbon"
+  out$VOI[out$VARS == "T_PH_H2O"] <- "Topsoil pH"
+  out$VOI[out$VARS == "T_ESP"] <- "Topsoil salinity"
+  out$VOI[out$VARS == "factor(YEAR)2009"] <- "2009"
+  out$VOI[out$VARS == "factor(YEAR)2010"] <- "2010"
+  out$VOI[out$VARS == "factor(YEAR)2011"] <- "2011"
+  out$VOI[out$VARS == "factor(YEAR)2012"] <- "2012"
+  out$VOI[out$VARS == "factor(YEAR)2013"] <- "2013"
+  out$VOI[out$VARS == "factor(YEAR)2014"] <- "2014"
+  out$VOI[out$VARS == "factor(YEAR)2015"] <- "2015"
+  out$VOI[out$VARS == "factor(YEAR)2016"] <- "2016"
+  out$VOI[out$VARS == "factor(YEAR)2017"] <- "2017"
+  out$VOI[out$VARS == "factor(YEAR)2018"] <- "2018"
+  
+  outs <- out %>% filter(VOI %in% c("2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018"))
+  outs$VOI <- as.numeric(as.character(outs$VOI))
+  
+  ggplot(outs, aes(x = VOI, y = MEAN, group = CROP, color = CROP)) +
+    geom_line() +
+    geom_point() +
+    geom_errorbar(aes(ymin = LOW, ymax = HIGH), width = 0.2) +
+    project_theme +
+    labs(x = "",
+         y = "Mean estimated effect",
+         color = "")+
+    colors_c +
+  theme(legend.position = "right",
+        legend.title = element_blank()) +
+    scale_x_continuous(breaks = 2009:2018, labels = 2009:2018)
+
+}
+
+tcoef <- plot_all_coef(mlist)  + theme(text = element_text(size = 12),
+                                     axis.text = element_text(size = 12),
+                                     legend.text = element_text(size=12))
+
+# ggsave("./figs/coefficients_time_only.png", width = 10, height = 5)
+```
+
+```{r}
+ggarrange(coef, tcoef, labels = c("A", "B"), common.legend = T, nrow = 2, ncol =1, legend = "bottom")
+ggsave("./figs/regression_results.png", width = 8, height = 8)
+```
+
+***
+
+# Figure 3: Crop-specific differences
+
+```{r echo=F, message=F, warning=F}
+dfus <- df  # for crop specific
+dfus$DIFF[dfus$DIFF > 4] <- 4
+dfus$DIFF[dfus$DIFF < -4] <- -4
+
+limit <- max(abs(dfus$DIFF), na.rm=T) * c(-1, 1)
+
+corn <- ggplot() +
+  geom_sf(data = dfus %>% filter(CROP == "corn"), color = "transparent", size = 0.05, aes(fill = DIFF)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+     scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "C. Corn",
+       subtitle = "") + theme(text = element_text(size = 20)) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+soy <- ggplot() +
+  geom_sf(data = dfus %>% filter(CROP == "soy"), color = "transparent", size = 0.05, aes(fill = DIFF)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+     scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "D. Soy",
+       subtitle = "") + theme(text = element_text(size = 20)) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+wwheat <- ggplot() +
+  geom_sf(data = dfus %>% filter(CROP == "wwheat"), color = "transparent", size = 0.05, aes(fill = DIFF)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+    scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "E. Winter wheat",
+       subtitle = "") + theme(text = element_text(size = 20)) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+alfalfa <- ggplot() +
+  geom_sf(data = dfus %>% filter(CROP == "alfalfa"), color = "transparent", size = 0.05, aes(fill = DIFF)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+    scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", 
+                         midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "A. Alfalfa",
+       subtitle = "") + theme(text = element_text(size = 20), 
+                              legend.text = element_text(size = 20),
+                              legend.position = "right") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank()) 
+
+hay <- ggplot() +
+  geom_sf(data = dfus %>% filter(CROP == "hay"), color = "transparent", size = 0.05, aes(fill = DIFF)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+     scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "B. Hay",
+       subtitle = "") + 
+  theme(text = element_text(size = 20) 
+        ) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+get_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+
+limit <- max(abs(dfs$WAVG), na.rm=T) * c(-1, 1)
+wd <- ggplot() +
+  geom_sf(data = dfs, color = "transparent", size = 0.05, aes(fill = WAVG)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+  scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "",
+       subtitle = "") +
+  labs(fill = "",
+       title = "F. Weighted average",
+       subtitle = "") + theme(text = element_text(size = 20), legend.text = element_text(size = 20)) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+lout <- get_legend(alfalfa) #+ guides(shape = guide_legend(override.aes = list(size=40)))
+
+ggarrange(alfalfa, hay, corn, soy, wwheat, wd, ncol = 2, nrow = 3, legend.grob = lout, common.legend = T, legend = "right")
+
+ggsave("./figs/diff_plot_crop.png", width = 15 , height= 15)
+
+```
+
+***
+
+# Figure 4: Box and whisker for WA
+
+Sum expenses:
+
+```{r eval=F}
+medians <- dfs %>% 
+  select(-c(WAVG, N, GEOID, TOTAL)) %>%
+  group_by(BS) %>% summarize_all(funs(median), na.rm=T)
+
+inputhi <- medians %>% group_by(BS) %>%
+  summarize(TOTAL = fert + chem + labor_expense + machinery)
+```
+
+```{r}
+# dfs %>% group_by(BS) %>% summarize(med = median(insur_acres, na.rm=T))
+plt <- melt(dfscale, id.vars = c("BS"),
+            measure.vars = c("fert", "chem", "machinery", "labor_expense", "gvt_prog", "insur_acres",
+                             "exp", "occup", "tenant", "acres_per_op", "BLACKP", "HISPP", "WHITEP", "female",  "ED", "SDI", "PNC", "AREA_MN_AG")) %>%
+  filter(BS != "Average")
+c <- plt
+c$VOI <- as.character(plt$variable)
+c$CAT <- NA
+
+c$VOIC[c$VOI == "female"] <- "% female operators"
+c$CAT[c$VOI == "female"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "BLACKP"] <- "% Black acres operated"
+c$CAT[c$VOI == "BLACKP"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "HISPP"] <- "% Hispanic acres operated"
+c$CAT[c$VOI == "HISPP"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "WHITEP"] <- "% white acres operated"
+c$CAT[c$VOI == "WHITEP"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "occup"] <- "% primary occupation"
+c$CAT[c$VOI == "occup"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "exp"] <- "Years farming"
+c$CAT[c$VOI == "exp"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "acres_per_op"] <- "Farm size"
+c$CAT[c$VOI == "acres_per_op"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "tenant"] <- "% tenant operators"
+c$CAT[c$VOI == "tenant"] <- "B. Farm(er) characteristics"
+
+# Inputs
+
+c$VOIC[c$VOI == "fert"] <- "Fertilizer expense"
+c$CAT[c$VOI == "fert"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "chem"] <- "Chemical expense"
+c$CAT[c$VOI == "chem"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "labor_expense"] <- "Labor expense"
+c$CAT[c$VOI == "labor_expense"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "machinery"] <- "Machinery expense"
+c$CAT[c$VOI == "machinery"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "gvt_prog"] <- "Government receipts"
+c$CAT[c$VOI == "gvt_prog"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "insur_acres"] <- "Crop insurance"
+c$CAT[c$VOI == "insur_acres"] <- "A. Farm resources"
+
+# Landscape
+
+c$VOIC[c$VOI == "AREA_MN_AG"] <- "Mean patch area"
+c$CAT[c$VOI == "AREA_MN_AG"] <- "C. Landscape"
+
+c$VOIC[c$VOI == "SDI"] <- "Shannon Diversity"
+c$CAT[c$VOI == "SDI"] <- "C. Landscape"
+
+c$VOIC[c$VOI == "PNC"] <- "% natural cover"
+c$CAT[c$VOI == "PNC"] <- "C. Landscape"
+
+c$VOIC[c$VOI == "ED"] <- "Edge density"
+c$CAT[c$VOI == "ED"] <- "C. Landscape"
+
+a <- ggplot(c %>% filter(BS != "Average spot", CAT == "A. Farm resources")) +
+  geom_boxplot(aes(x = VOIC, y = value, fill = BS, group = interaction(VOIC, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "",
+       title = "A. Farm resources",
+       fill = "") +
+  ylim(c(-3, 3)) +
+  coord_flip() +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  theme(text = element_text(size = 16),
+        plot.title.position = "plot")
+
+b <- ggplot(c %>% filter(BS != "Average spot", CAT == "B. Farm(er) characteristics")) +
+  geom_boxplot(aes(x = VOIC, y = value, fill = BS, group = interaction(VOIC, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "",
+       title = "B. Farm(er) characteristics",
+       fill = "") +
+  ylim(c(-3, 3)) +
+  coord_flip() +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  theme(text = element_text(size = 16),
+        plot.title.position = "plot")
+
+cp <- ggplot(c %>% filter(BS != "Average spot", CAT == "C. Landscape")) +
+  geom_boxplot(aes(x = VOIC, y = value, fill = BS, group = interaction(VOIC, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5, varwidth=T) +
+  project_theme +
+  labs(x = "",
+       y = "",
+       title = "C. Landscape",
+       fill = "") +
+  ylim(c(-3, 3)) +
+  coord_flip() +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  theme(text = element_text(size = 16),
+        plot.title.position = "plot")
+
+
+ggarrange(ggarrange(a, cp, ncol=1, nrow=2, heights = c(0.9, 0.6), legend = "none"), b, ncol = 2, nrow = 1, common.legend = T, legend = "bottom",
+          heights = c(1.1, 0.7), widths = c(.8,1))
+ggsave("./figs/allvars.png", width=12, height=10)
+
+##library(cowplot)
+#plot_grid(a, b, cp, ncol = 3, align = "v")
+
+# ggplot(c %>% filter(BS != "Average spot")) +
+#   geom_boxplot(aes(x = VOIC, y = value, fill = BS, group = interaction(VOIC, BS)), outlier.size = 0.5,
+#                outlier.alpha = 0.5) +
+#   project_theme +
+#   labs(x = "",
+#        y = "",
+#        title = "") +
+#   theme(legend.position = "bottom",
+#         axis.text.x = element_text(angle = 45, hjust=1),
+#         strip.placement = "above",
+#         strip.background = element_rect(fill=NA,colour="black"),
+#         panel.spacing=unit(0,"cm"), axis.title.y = element_blank()) +
+#   scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+#   facet_grid(CAT ~., drop=T, shrink=F, switch="y", space="free", scales="free") +
+#   scale_y_continuous(labels = comma) + 
+#   # coord_flip() 
+#   scale_x_discrete(limits = rev(levels(c$CAT))) +
+#   ylim(c(-3, 3)) +
+#   theme(legend.text = element_text(size=16),
+#         text = element_text(size=16)) +
+#   coord_flip() 
+# ggsave("./figs/allwa.png", height=14, width=8)
+
+
+```
+
+***
+
+# Figure 5: Random forests
+
+```{r echo=F, mesasge=F, warning=F, fig.show='hide'}
+# length(dfscale$HISPP[is.na(dfscale$HISPP)])/nrow(dfscale)
+
+library(randomForest)
+rfData <- dfscale %>% select(c(WAVG, fert, chem, machinery, labor_expense, gvt_prog, insur_acres, 
+                                exp, occup, tenant, acres_per_op, 
+                                
+                                PNC, SDI, ED, AREA_MN_AG
+                                )) %>% na.omit()
+
+# build training and testing datasets
+set.seed(1)
+random_rn <- sample(nrow(rfData), ceiling(nrow(rfData)*.25))
+train <- rfData[-random_rn,]
+ho <- rfData[random_rn,] 
+
+# tuneRF(x = train[,1:44], y = train$BS_BIN, ntreeTry = 501)
+rf_bs <- randomForest(formula = WAVG ~.,
+                   data = train,
+                   importance = T,
+                   mtry = ncol(rfData) - 5)
+
+yhat <- predict(rf_bs, newdata = ho)
+mse <- mean((as.numeric(as.character(yhat)) - as.numeric(as.character(ho$WAVG)))^2) # test set MSE
+
+# tuneRF(x = train[,1:44], y = train$BS_BIN, ntreeTry = 501)
+rf_bs <- randomForest(formula = WAVG ~.,
+                   data = rfData,
+                   importance = T,
+                   mtry = ncol(rfData) - 5)
+
+imp <- as.data.frame(varImpPlot(rf_bs))
+imp$varnames <- rownames(imp) # row names to column
+imp$varnames <- as.factor(imp$varnames)
+rownames(imp) <- NULL
+
+imp$VOI <- imp$varnames
+c <- imp
+c$VOIC <- NA
+c$CAT <- NA
+c$VOIC[c$VOI == "female"] <- "% female operators"
+c$CAT[c$VOI == "female"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "BLACKP"] <- "% Black acres operated"
+c$CAT[c$VOI == "BLACKP"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "HISPP"] <- "% Hispanic acres operated"
+c$CAT[c$VOI == "HISPP"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "WHITEP"] <- "% white acres operated"
+c$CAT[c$VOI == "WHITEP"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "occup"] <- "% primary occupation"
+c$CAT[c$VOI == "occup"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "exp"] <- "Years farming"
+c$CAT[c$VOI == "exp"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "acres_per_op"] <- "Farm size"
+c$CAT[c$VOI == "acres_per_op"] <- "B. Farm(er) characteristics"
+
+c$VOIC[c$VOI == "tenant"] <- "% tenant operators"
+c$CAT[c$VOI == "tenant"] <- "B. Farm(er) characteristics"
+
+# Inputs
+
+c$VOIC[c$VOI == "fert"] <- "Fertilizer expense"
+c$CAT[c$VOI == "fert"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "chem"] <- "Chemical expense"
+c$CAT[c$VOI == "chem"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "labor_expense"] <- "Labor expense"
+c$CAT[c$VOI == "labor_expense"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "machinery"] <- "Machinery expense"
+c$CAT[c$VOI == "machinery"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "gvt_prog"] <- "Government receipts"
+c$CAT[c$VOI == "gvt_prog"] <- "A. Farm resources"
+
+c$VOIC[c$VOI == "insur_acres"] <- "Crop insurance"
+c$CAT[c$VOI == "insur_acres"] <- "A. Farm resources"
+
+# Landscape
+
+c$VOIC[c$VOI == "AREA_MN_AG"] <- "Mean patch area"
+c$CAT[c$VOI == "AREA_MN_AG"] <- "C. Landscape"
+
+c$VOIC[c$VOI == "SDI"] <- "Shannon Diversity"
+c$CAT[c$VOI == "SDI"] <- "C. Landscape"
+
+c$VOIC[c$VOI == "PNC"] <- "% natural cover"
+c$CAT[c$VOI == "PNC"] <- "C. Landscape"
+
+c$VOIC[c$VOI == "ED"] <- "Edge density"
+c$CAT[c$VOI == "ED"] <- "C. Landscape"
+
+ggplot(c, aes(x = reorder(VOIC, `%IncMSE`), y = `%IncMSE`)) +
+  geom_point() +
+  geom_segment(aes(x=reorder(VOIC, `%IncMSE`), xend=VOIC,y=0,yend=`%IncMSE`)) +
+  ylab("% increase in MSE") +
+  xlab("") +
+  ggtitle("") +
+  coord_flip() +
+  project_theme +
+  facet_grid(CAT ~ ., drop=T, shrink=F, switch="y", space = "free", scales = "free") +
+theme(strip.placement = "outside",
+      strip.background = element_rect(fill=NA,colour=NA),
+      panel.spacing=unit(0,"cm"), axis.title.y = element_blank(),
+      legend.position = "bottom") 
+
+# ggsave("./figs/variable_imp.png", plot = last_plot())
+
+```
+
+
+# Figure 6: High plains aquifer
+
+Shapefile downloaded [here](https://water.usgs.gov/ogw/gwrp/activities/gspdata/Studies/HighPlains.html).
+
+```{r}
+library(sf)
+hpa <- st_read("./data/hp_bound2010.shp")
+limit <- c(-4, 4)
+
+out <- prep_data("corn")
+county_sub <- out[[2]]
+df <- prep_attr_data("corn", scale=F)
+st_geometry(df) <- NULL
+corn_plt <- merge(county_sub, df, by = "GEOID")
+
+st_transform(hpa, st_crs(corn_plt))
+
+corn_sub <- corn_plt %>% filter(STATEFP %in% c("48", "40", "35", "08", "20", "31", "56", "46"))
+
+states <- state %>% filter(STATE_FIPS %in% c("48", "40", "35", "08", "20", "31", "56", "46"))
+
+corn_plot <- ggplot() +
+      geom_sf(data = corn_sub, aes(fill = DIFF), color = "transparent") +
+    geom_sf(data = states, size = 1, fill = "transparent", color = "gray") +
+        geom_sf(data = hpa, size = 1, fill = "transparent") +
+    project_theme +
+    labs(x = "A. Corn", 
+         fill = "") +
+    theme(axis.title.x = element_text(size = 15)) +
+         scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+out <- prep_data("soy")
+county_sub <- out[[2]]
+df <- prep_attr_data("soy", scale=F)
+st_geometry(df) <- NULL
+corn_plt <- merge(county_sub, df, by = "GEOID")
+
+st_transform(hpa, st_crs(corn_plt))
+
+corn_sub <- corn_plt %>% filter(STATEFP %in% c("48", "40", "35", "08", "20", "31", "56", "46"))
+
+soy_plot <- ggplot() +
+      geom_sf(data = corn_sub, aes(fill = DIFF), color = "transparent") +
+    geom_sf(data = states, size = 1, fill = "transparent", color = "gray") +
+        geom_sf(data = hpa, size = 1, fill = "transparent") +
+    project_theme +
+    labs(x = "C. Soy", 
+         fill = "") +
+    theme(axis.title.x = element_text(size = 15)) +
+         scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+out <- prep_data("hay")
+county_sub <- out[[2]]
+df <- prep_attr_data("hay", scale=F)
+st_geometry(df) <- NULL
+corn_plt <- merge(county_sub, df, by = "GEOID")
+
+st_transform(hpa, st_crs(corn_plt))
+
+corn_sub <- corn_plt %>% filter(STATEFP %in% c("48", "40", "35", "08", "20", "31", "56", "46"))
+
+hay_plot <- ggplot() +
+      geom_sf(data = corn_sub, aes(fill = DIFF), color = "transparent") +
+    geom_sf(data = states, size = 1, fill = "transparent", color = "gray") +
+        geom_sf(data = hpa, size = 1, fill = "transparent") +
+    project_theme +
+    labs(x = "B. Hay", 
+         fill = "") +
+    theme(axis.title.x = element_text(size = 15)) +
+          scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+
+
+library(ggpubr)
+
+ggarrange(corn_plot, hay_plot, soy_plot, ncol = 3, nrow = 1, common.legend = T, legend = "right")
+
+ggsave("./figs/hpa.png", plot = last_plot(), width = 10, height = 6)
+
+```
+
+# Figure 7: Livelihood and PDP
+
+```{r}
+dfs %>% group_by(BS) %>% summarize(med = median(gvt_prog, na.rm=T))
+plt <- melt(dfscale, id.vars = c("BS"),
+            measure.vars = c("crop_sales", "income_farm", "income")) %>%
+  filter(BS != "Average")
+plt$variable <- as.character(plt$variable)
+
+
+plt$variable[plt$variable == "income_farm"] <- "Net-farm income ($/operation)"
+plt$variable[plt$variable == "income"] <-  "Total farm income ($/operation)"
+plt$variable[plt$variable == "crop_sales"] <-  "Crop sales ($/operated acre)"
+plt$variable <- as.factor(plt$variable)
+
+lh <- ggplot(plt %>% filter(BS != "Average spot", value <4)) +
+  geom_boxplot(aes(x = variable, y = value, fill = BS, group = interaction(variable, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "",
+       title = "") +
+  theme(legend.position = "right") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  #facet_wrap(vars(variable), nrow = length(unique(plt$variable)), scales = "free") +
+  scale_y_continuous(labels = comma) + coord_flip() +
+  scale_x_discrete(limits = rev(levels(plt$variable))) +
+  theme(text = element_text(size = 16))
+
+# ggsave("./figs/livelihood_wa.png", width = 6, height=4)
+```
+
+```{r echo=F}
+fertp <- as.data.frame(partialPlot(rf_bs, rfData, "fert"))
+fertp$VAR = "Fertilizer ($/acre)"                       
+
+chemp <- as.data.frame(partialPlot(rf_bs, rfData, "chem"))
+chemp$VAR = "Chemicals ($/acre)" 
+
+labp <- as.data.frame(partialPlot(rf_bs, rfData, "fert"))
+labp$VAR = "Fertilizer ($/acre)" 
+
+machp <- as.data.frame(partialPlot(rf_bs, rfData, "machinery"))
+machp$VAR = "Machinery ($/acre)" 
+
+gvtp <- as.data.frame(partialPlot(rf_bs, rfData, "gvt_prog"))
+gvtp$VAR = "Gvt. receipts ($/acre)" 
+
+insp <- as.data.frame(partialPlot(rf_bs, rfData, "insur_acres"))
+insp$VAR = "Crop insurance (% acres))" 
+
+# chemp <- as.data.frame(partialPlot(rf_bs, rfData, "chem"))
+dm <- rbind.data.frame(fertp, chemp, labp, gvtp)
+
+
+input_pp <- ggplot(dm) +
+  geom_line(aes(x = x, y = y, color = VAR), size = 1.2) +
+  project_theme +
+  theme(legend.title = element_blank(), legend.position = "right" ) +
+  labs(x = "Standardized values",
+       y = "Predicted weighted average") +
+  theme(text = element_text(size=12))
+
+#ggsave("./figs/pd_inputs.png", plot = input_pp, width = 6, height = 3)
+# https://christophm.github.io/interpretable-ml-book/pdp.html
+
+ggarrange(lh, input_pp, labels = c("A", "B"), ncol=1, nrow=2)
+ggsave("./figs/lh_inputs.png", width = 10, height = 8)
+
+```
+
+
+
+# SI APPENDIX
+
+# Table 1: Model performance
+
+```{r}
+r2 <- rbind.data.frame(dcorn$R2, dsoy$R2, dwwheat$R2, dalfalfa$R2, dhay$R2)
+mse <- rbind.data.frame(dcorn$MSE, dsoy$MSE, dwwheat$MSE, dalfalfa$MSE, dhay$MSE)
+dic <- rbind.data.frame(dcorn$DIC, dsoy$DIC, dwwheat$DIC, dalfalfa$DIC, dhay$DIC)
+cpo <- rbind.data.frame(dcorn$CPO, dsoy$CPO, dwwheat$CPO, dalfalfa$CPO, dhay$CPO)
+
+perf <- cbind.data.frame(clean_crops, r2, mse, dic, cpo)
+colnames(perf) <- c("CROP", "R2", "MSE", "DIC", "CPO")
+
+kable(perf %>% select(-c(DIC, CPO)))
+```
+
+## Table 2:
+
+### Proportion variance explained
+
+```{r eval=F}
+# INLA p. 186
+compute_var_exp <- function(crop, model) {
+  
+  out <- prep_data(crop)[[1]]
+  mat.marg <- matrix(NA, nrow = length(unique(out$GEOID)), ncol = 100000)
+  m <- model$marginals.random$ID
+  
+  for (i in 1:length(unique(out$GEOID))) {
+    
+    u <- m[[length(unique(out$GEOID))+i]]
+    mat.marg[i,] <- inla.rmarginal(100000, u)
+    
+  }
+  
+  var.u <- apply(mat.marg, 2, var)
+  
+  var.v <- inla.rmarginal(100000, model$marginals.hyper$`Precision for ID`)
+  
+  perc.var.u <- mean(var.u/(var.u + var.v))
+  return(perc.var.u)
+}
+
+pvcorn <- compute_var_exp("corn", mcorn)
+pvsoy <- compute_var_exp("soy", msoy)
+pvwwheat <- compute_var_exp("wwheat", mwwheat)
+pvalfalfa <- compute_var_exp("alfalfa", malfalfa)
+pvhay <- compute_var_exp("hay", mhay)
+```
+
+### Spatial autocorrelation
+
+See visualizations in `BS_spatial_structure` document.
+
+```{r message=FALSE, warning=FALSE, echo=F, eval=F}
+moran_list <- list()
+cg_list <- list()
+
+for (i in 1:length(crops)) {
+  
+  print(crops[[i]])
+  crop <- crops[[i]]
+  county_sub <- prep_data(crop)[[2]]
+  out <- prep_attr_data(crop)
+  df <- out[[1]]
+  
+  county_sp <- as(county_sub, "Spatial")
+  county_sp <- merge(county_sp, df, by = "GEOID")
+  county_sp <- county_sp[!is.na(county_sp$DIFF),]
+
+  # inverse distance
+  queen <- poly2nb(county_sp)
+  dists <- nbdists(queen, coordinates(county_sp))
+  idw <- lapply(dists, function(x) 1/(x/1000))
+  idwlist <- nb2listw(queen, glist = idw, zero.policy = T)
+  # gmoran <- moran.test(county_sp$DIFF, listw = idwlist, randomisation = T, zero.policy = T)
+  moran <- moran.mc(county_sp$DIFF, idwlist, nsim = 1000, zero.policy = T)
+  morandf <- cbind.data.frame(MI = moran$statistic, MP = moran$p.value, CROP = crop)
+  rownames(morandf) <- NULL
+  moran_list[[i]] <- morandf
+  
+  # correlogram
+  cgm <- sp.correlogram(queen, county_sp$DIFF, order = 25, method = "I", zero.policy = T, randomisation=T)
+  cg_list[[i]] <- cgm
+
+}
+
+saveRDS(cg_list, "./out/correlograms.RDS")
+saveRDS(moran_list, "./out/morans.RDS")
+```
+
+# Figure 1: USDA Farm resource regions
+
+```{r}
+ggplot() +
+      geom_sf(data = frr_shp, size = 1, aes(fill = as.factor(NAME))) +
+  geom_sf(data = state, color = "#A9A9A9", fill = "gray", alpha = 0.5) +
+
+  scale_fill_brewer(type = "qual", palette = "Accent") +
+  project_theme +
+  labs(fill = "",
+       title = "",
+       subtitle = "") +
+  labs(fill = "",
+       title = "",
+       subtitle = "") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank()) 
+ggsave("./figs/FRR.png")
+```
+
+
+# Figure 2: Regional plots
+
+
+```{r}
+limit <- c(-1, 1)
+
+total_area_effects <- function(model_run, data, level, county_sub) {
+  
+  r <- model_run
+  n <- length(unique(data[,level]))
+  
+  # extract area-specific residuals, random effects, Epsilon = u + v
+  asr <- r$summary.random[[level]][1:n, c(1, 2, 3)]  # ID, mean, sd
+  county_sp <- as(county_sub, "Spatial")
+  
+  if (level == "FRR") {
+    asr <- r$summary.random[[level]][1:(n + 2), c(1, 2, 3)]  # ID, mean, sd
+    colnames(asr) <- c("FRR", "mean", "SD")
+  } 
+  
+  map_asr <- merge(county_sp, asr, by = level, all=T)
+  map_asr <- merge(county, map_asr, by = 'GEOID', all = T)
+  
+  limit <- c(-1, 1)
+  se <- ggplot() +
+    geom_sf(data = map_asr, color = "transparent", size = 0.05, aes(fill = mean)) +
+    geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+    geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+    project_theme +
+    labs(fill = "") +
+    scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                         limit = limit) +
+    labs(fill = "",
+         title = "",
+         subtitle = "") +
+    theme(text = element_text(size = 20)) +
+    theme(axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          rect = element_blank())
+  
+  
+  return(se)
+  
+}
+
+
+
+make_reg_plot <- function(crop, modr, title) {
+  
+  out <- prep_data(crop, scale=T)
+  null <- out[[1]]
+  county_sub <- out[[2]]
+  modlrr <- total_area_effects(modr, null, level="FRR", county_sub) + ggtitle(title)
+  # plt <- modlrr + ggtitle("Regional IID effects") +
+  #     scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", 
+  #                          midpoint = 0, na.value = "#D3D3D3", 
+  #                         limit = limit) +
+  #   labs(fill = "",
+  #        title = title,
+  #        subtitle = "") + theme(text = element_text(size = 30)) +
+  #   theme(axis.text.x = element_blank(),
+  #         axis.text.y = element_blank(),
+  #         axis.ticks = element_blank(),
+  #         rect = element_blank())
+  return(modlrr)
+
+}
+
+cp <- make_reg_plot("corn", mcorn, "C. Corn")
+sp <- make_reg_plot("soy", msoy, "D. Soy")
+wp <- make_reg_plot("wwheat", mwwheat, "E. Winter wheat")
+ap <- make_reg_plot("alfalfa", malfalfa, "A. Alfalfa")
+hp <- make_reg_plot("hay", mhay, "B. Hay")
+
+# ACROSS crop bright spots
+dfs <- df2 %>%
+  group_by(FRR.x) %>%
+  summarize(N = sum(PROP_CROP, na.rm=T),
+    #N = length(DIFF[!is.na(DIFF)]),
+            TOTAL = sum(WD, na.rm=T)) %>%
+  mutate(WAVG = TOTAL/N)
+
+wd <- ggplot() +
+  geom_sf(data = dfs, color = "transparent", size = 0.05, aes(fill = WAVG)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+  scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "",
+       subtitle = "") +
+  labs(fill = "",
+       title = "F. Weighted average",
+       subtitle = "") +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())  +   theme(text = element_text(size = 20)) 
+
+
+ggarrange(ap, hp, cp, sp, wp, wd, ncol = 2, nrow = 3, common.legend = T, legend = "right") 
+ggsave("./figs/reg_plot_crop.png", width = 15 , height= 15)
+
+# http://www.sthda.com/english/wiki/wiki.php?id_contents=7930#grid.arrange-create-and-arrange-multiple-plots
+#library(gridExtra)
+##grid.arrange(ap, hp, cp, sp, wp, wd, lout, ncol = 2, nrow = 4)
+#ggsave("./figs/reg_plot_crop.png", width = 30 , height= 30)
+
+```
+
+## Figure 3: Inputs by crop
+
+```{r echo=F}
+df$BS[df$BS == "Bright spot"] <- "> 1 sd"
+df$BS[df$BS == "Dark spot"] <- "< 1 sd"
+
+fert <- ggplot(df %>% filter(BS != "Average spot", fert < 125)) +
+  geom_boxplot(aes(x = CCROP, y = fert, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Fertilizer ($/acre)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+# chemical expense $/operated acre
+chem <- ggplot(df %>% filter(BS != "Average spot", chem < 125)) +
+  geom_boxplot(aes(x = CCROP, y = chem, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Chemicals ($/acre)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+# machinery assests, $/operated acre
+mach <- ggplot(df %>% filter(BS != "Average spot", machinery < 1250)) +
+  geom_boxplot(aes(x = CCROP, y = machinery, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Machinery ($/acre)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+labor <- ggplot(df %>% filter(BS != "Average spot", labor_expense < 200)) +
+  geom_boxplot(aes(x = CCROP, y = labor_expense, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Labor ($/acre)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ins <- ggplot(df %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = insur_acres, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "% acres with federal crop insurance") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+gvt <- ggplot(df %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = gvt_prog, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Gvt. receipts ($/acre)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ggarrange(fert, chem, mach, labor, gvt, ins, nrow = 3, ncol = 2, common.legend = T, legend = "bottom",
+          labels = c("A", "B", "C", "D", "E", "F"))
+ggsave("./figs/inputs.png", width = 10, height = 10)
+
+```
+
+
+## Characteristics
+
+```{r}
+occup <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = occup, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3, outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "% primary occupation as farming") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "")
+
+exp <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = exp, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3, outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "Years farming") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+tenant <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = tenant, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3, outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "% acres operated by tenants") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+apo <- ggplot(df2 %>% filter(BS != "Average spot", acres_per_op < 2000)) +
+  geom_boxplot(aes(x = CCROP, y = acres_per_op, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3, outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "Median acres per operation") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+
+## Race by crop
+# SI
+black <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = BLACKP, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3, outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "% Black acres operated") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+ # ylim(c(0,100)) 
+
+hisp <- ggplot(df2 %>% filter(BS != "Average spot", HISPP < 10)) +
+  geom_boxplot(aes(x = CCROP, y = HISPP, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3,
+               outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "% Hispanic acres operated") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+#  ylim(c(0,100))
+
+white <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = WHITEP, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3, outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "% White acres operated") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+#  ylim(c(0,100)) 
+
+female <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = female, fill = BS, group = interaction(CCROP, BS)), size=0.3, outlier.alpha = 0.3, outlier.size = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "% female acres operated") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ggarrange(occup, exp, tenant, apo, black, hisp, white, female, ncol=2, nrow=4, common.legend=T, legend = "bottom",
+          labels = c("A", "B", "C", "D", "E", "F", "G", "H"))
+ggsave("./figs/characteristics.png", height=12, width=8)
+```
+
+
+## Landscape by crop
+
+```{r}
+# all indices are for AG
+
+sdi <- ggplot(df %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = SDI, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Shannon Diversity Index") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ed <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = ED, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Edge density") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ama <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = AREA_MN_AG, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Mean patch area") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+pnc <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = PNC, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Percent natural cover") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ggarrange(ama, ed, sdi, pnc, ncol = 2, nrow = 2, common.legend = T, legend = "bottom", labels = c("A", "B", "C", "D"))
+ggsave("./figs/landscape.png", width=7, height=7)
+
+
+```
+
+
+## Livelihood by crop
+
+```{r}
+sdi <- ggplot(df %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = income_farm, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Net income ($/operation)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ed <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = income, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Total farm income ($/operation)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+pnc <- ggplot(df2 %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = CCROP, y = crop_sales, fill = BS, group = interaction(CCROP, BS))) +
+  project_theme +
+  labs(x = "",
+       y = "Crop sales ($/operated acre)") +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") 
+
+ggarrange(ed, sdi, pnc, ncol = 2, nrow = 2, common.legend = T, legend = "bottom", labels = c("A", "B", "C"))
+ggsave("./figs/livelihoods.png", width=7, height=7)
+
+
+```
+
+
+## Race maps
+
+
+```{r eval=F}
+limit = c(0, 100)
+# df2$BLACKP[df2$BLACKP > 20] <- 20
+blk_map <- ggplot(df2 %>% filter(CROP == "corn")) +
+  geom_sf(color = "transparent", size = 0.05, aes(fill = BLACKP)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+  scale_fill_viridis(na.value = "#D3D3D3", limit = limit) +
+  #scale_fill_gradient(low = "#8b0000", high = "#000080", na.value = "#D3D3D3" ) +
+  labs(fill = "",
+       title = "% Black operators",
+       subtitle = "") + theme(text = element_text(size = 15), legend.text = element_text(size = 20)) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+hisp_map <- ggplot(df2 %>% filter(CROP == "corn")) +
+  geom_sf(color = "transparent", size = 0.05, aes(fill = HISPP)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+  scale_fill_viridis(na.value = "#D3D3D3", limit=limit) +
+  #scale_fill_gradient(low = "#8b0000", high = "#000080", na.value = "#D3D3D3" ) +
+  labs(fill = "",
+       title = "% Hispanic operators",
+       subtitle = "") + theme(text = element_text(size = 15), legend.text = element_text(size = 20)) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank())
+
+
+white_map <- ggplot(df2 %>% filter(CROP == "corn")) +
+  geom_sf(color = "transparent", size = 0.05, aes(fill = WHITEP)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+  scale_fill_viridis(na.value = "#D3D3D3", limit = limit) +
+  #scale_fill_gradient(low = "#8b0000", high = "#000080", na.value = "#D3D3D3" ) +
+  labs(fill = "",
+       title = "% white operators",
+       subtitle = "") + theme(text = element_text(size = 15), legend.text = element_text(size = 20)) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_blank()) 
+
+ggarrange(blk_map, hisp_map, white_map, ncol = 1, nrow = 3, labels = c("A", "B", "C"))
+
+ggsave("./figs/racemaps.png", height=12, width=8)
+```
+
+
+## Partial dependence plots
+
+The y-axis of a partial dependence plot for regression represents the marginal impact of the independent variable to the dependent variable. E.g. if the line is at 0, then for that value of the independent variable, there is 0 impact to the dependent variable. It does not represent the predicted value or relative impact of this variable to other variables. However, you can deduce relative impact by plotting multiple partial dependence plots side by side for multiple independent variables and share the y-axis.
+
+s says that the plots show the relative logit contribution of the variable on the class probability from the perspective of the model. In other words negative values (in the y-axis) mean that the positive class is less likely for that value of the independent variable (x-axis) according to the model. Similarly positive values mean that the positive class is more likely for that value of the independent variable according to the model. Clearly, zero implies no average impact on class probability according to the model.
+
+
+
+```{r echo=F, mesasge=F, warning=F, fig.show='hide'}
+library(randomForest)
+rfData <- dfs %>% select(c(WAVG, fert, chem, machinery, labor_expense, gvt_prog, insur_acres, 
+                                exp, occup, tenant, acres_per_op, 
+                                WHITEP, BLACKP, HISPP, female,
+                                PNC, SDI, ED, AREA_MN_AG
+                                )) %>% na.omit()
+
+# build training and testing datasets
+set.seed(1)
+random_rn <- sample(nrow(rfData), ceiling(nrow(rfData)*.25))
+train <- rfData[-random_rn,]
+ho <- rfData[random_rn,] 
+
+# tuneRF(x = train[,1:44], y = train$BS_BIN, ntreeTry = 501)
+rf_bs <- randomForest(formula = WAVG ~.,
+                   data = train,
+                   importance = T,
+                   mtry = ncol(rfData) - 5)
+
+yhat <- predict(rf_bs, newdata = ho)
+mse <- mean((as.numeric(as.character(yhat)) - as.numeric(as.character(ho$WAVG)))^2) # test set MSE
+
+# tuneRF(x = train[,1:44], y = train$BS_BIN, ntreeTry = 501)
+rf_bs <- randomForest(formula = WAVG ~.,
+                   data = rfData,
+                   importance = T,
+                   mtry = ncol(rfData) - 5)
+
+imp <- as.data.frame(varImpPlot(rf_bs))
+imp$varnames <- rownames(imp) # row names to column
+imp$varnames <- as.factor(imp$varnames)
+rownames(imp) <- NULL
+
+imp$VOI <- imp$varnames
+c <- imp
+c$VOIC <- NA
+c$CAT <- NA
+c$VOIC[c$VOI == "female"] <- "% female operators"
+c$CAT[c$VOI == "female"] <- "Farm(er) characteristics"
+
+c$VOIC[c$VOI == "BLACKP"] <- "% acres operated by black farmers"
+c$CAT[c$VOI == "BLACKP"] <- "Farm(er) characteristics"
+
+c$VOIC[c$VOI == "HISPP"] <- "% acres operated by Hispanic farmers"
+c$CAT[c$VOI == "HISPP"] <- "Farm(er) characteristics"
+
+c$VOIC[c$VOI == "WHITEP"] <- "% acres operated by white farmers"
+c$CAT[c$VOI == "WHITEP"] <- "Farm(er) characteristics"
+
+c$VOIC[c$VOI == "occup"] <- "% primary occupation"
+c$CAT[c$VOI == "occup"] <- "Farm(er) characteristics"
+
+c$VOIC[c$VOI == "exp"] <- "Average years farming"
+c$CAT[c$VOI == "exp"] <- "Farm(er) characteristics"
+
+c$VOIC[c$VOI == "acres_per_op"] <- "Acres per operation"
+c$CAT[c$VOI == "acres_per_op"] <- "Farm(er) characteristics"
+
+c$VOIC[c$VOI == "tenant"] <- "% tenant operators"
+c$CAT[c$VOI == "tenant"] <- "Farm(er) characteristics"
+
+# Inputs
+
+c$VOIC[c$VOI == "fert"] <- "Fertilizer expense ($/acre)"
+c$CAT[c$VOI == "fert"] <- "Decision-making"
+
+c$VOIC[c$VOI == "chem"] <- "Chemical expense ($/acre)"
+c$CAT[c$VOI == "chem"] <- "Decision-making"
+
+c$VOIC[c$VOI == "labor_expense"] <- "Labor expense ($/acre)"
+c$CAT[c$VOI == "labor_expense"] <- "Decision-making"
+
+c$VOIC[c$VOI == "machinery"] <- "Machinery ($/acre)"
+c$CAT[c$VOI == "machinery"] <- "Decision-making"
+
+c$VOIC[c$VOI == "gvt_prog"] <- "Government receipts ($/acre)"
+c$CAT[c$VOI == "gvt_prog"] <- "Decision-making"
+
+c$VOIC[c$VOI == "insur_acres"] <- "Crop insurance (% acres)"
+c$CAT[c$VOI == "insur_acres"] <- "Decision-making"
+
+# Landscape
+
+c$VOIC[c$VOI == "AREA_MN_AG"] <- "Mean patch area"
+c$CAT[c$VOI == "AREA_MN_AG"] <- "Landscape"
+
+c$VOIC[c$VOI == "SDI"] <- "Shannon Diversity"
+c$CAT[c$VOI == "SDI"] <- "Landscape"
+
+c$VOIC[c$VOI == "PNC"] <- "% natural cover"
+c$CAT[c$VOI == "PNC"] <- "Landscape"
+
+c$VOIC[c$VOI == "ED"] <- "Edge density"
+c$CAT[c$VOI == "ED"] <- "Landscape"
+
+ggplot(c, aes(x = reorder(VOIC, `%IncMSE`), y = `%IncMSE`)) +
+  geom_point() +
+  geom_segment(aes(x=reorder(VOIC, `%IncMSE`), xend=VOIC,y=0,yend=`%IncMSE`)) +
+  ylab("% increase in MSE") +
+  xlab("") +
+  ggtitle("") +
+  coord_flip() +
+  project_theme +
+  facet_grid(CAT ~ ., drop=T, shrink=F, switch="y", space = "free", scales = "free") +
+theme(strip.placement = "outside",
+      strip.background = element_rect(fill=NA,colour=NA),
+      panel.spacing=unit(0,"cm"), axis.title.y = element_blank(),
+      legend.position = "bottom") 
+
+# ggsave("./figs/variable_imp.png", plot = last_plot())
+
+```
+
+
+```{r echo=F}
+# use unscaled for clarity
+fertp <- as.data.frame(partialPlot(rf_bs, rfData, "BLACKP")) ###
+fertp$VAR = "% acres operated by black farmers"                       
+
+chemp <- as.data.frame(partialPlot(rf_bs, rfData, "WHITEP"))
+chemp$VAR = "% acres operated by white farmers" 
+
+labp <- as.data.frame(partialPlot(rf_bs, rfData, "HISPP"))
+labp$VAR = "% acres operated by Hispanic farmers" 
+
+machp <- as.data.frame(partialPlot(rf_bs, rfData, "female"))
+machp$VAR = "% female operators" 
+
+rp <- rbind.data.frame(fertp, chemp, labp, machp)
+
+race_pp <- ggplot(rp) +
+  geom_line(aes(x = x, y = y, color = VAR), size = 1.2) +
+  project_theme +
+  theme(legend.title = element_blank(), legend.position = "right" ) +
+  labs(x = "% operated land",
+       y = "Predicted weighted average")
+race_pp
+
+
+ggsave("./figs/pd_race.png", width = 4, height = 3)
+```
+
+```{r echo=F}
+fertp <- as.data.frame(partialPlot(rf_bs, rfData, "acres_per_op")) ###
+fertp$VAR = "Average farm size"                       
+
+chemp <- as.data.frame(partialPlot(rf_bs, rfData, "exp"))
+chemp$VAR = "Average years farming" 
+
+labp <- as.data.frame(partialPlot(rf_bs, rfData, "occup"))
+labp$VAR = "% primary occupation" 
+
+machp <- as.data.frame(partialPlot(rf_bs, rfData, "tenant"))
+machp$VAR = "% tenants" 
+
+rp <- rbind.data.frame(fertp, chemp, labp, machp)
+
+char_pp <- ggplot(rp) +
+  geom_line(aes(x = x, y = y, color = VAR), size = 1.2) +
+  project_theme +
+  theme(legend.title = element_blank(), legend.position = "right" ) +
+  labs(x = "Standardized values",
+       y = "Predicted weighted average")
+
+ggsave("./figs/pd_char.png", plot = char_pp, width = 4, height = 3)
+```
+
+```{r echo=F}
+fertp <- as.data.frame(partialPlot(rf_bs, rfData, "SDI")) ###
+fertp$VAR = "Shannon Diversity of agriculture"                       
+
+chemp <- as.data.frame(partialPlot(rf_bs, rfData, "PNC"))
+chemp$VAR = "% natural cover" 
+
+labp <- as.data.frame(partialPlot(rf_bs, rfData, "ED"))
+labp$VAR = "Edge density" 
+
+machp <- as.data.frame(partialPlot(rf_bs, rfData, "AREA_MN_AG"))
+machp$VAR = "Mean patch area" 
+
+lp <- rbind.data.frame(fertp, labp, machp)
+
+l_pp <- ggplot(lp) +
+  geom_line(aes(x = x, y = y, color = VAR), size = 1.2) +
+  project_theme +
+  theme(legend.title = element_blank(), legend.position = "right" ) +
+  labs(x = "Standardized values",
+       y = "Predicted weighted average")
+
+ggsave("./figs/pd_ls.png", plot = l_pp, width = 6, height = 3)
+
+ggarrange(char_pp, l_pp, labels = c("A", "B"), ncol = 1, nrow=2)
+ggsave("./figs/pdp.png", width=12, height=10)
+```
+
+```{r echo=F}
+# top 5 predictors: fert, gvt, black, nat, machinwet
+fertp <- as.data.frame(partialPlot(rf_bs, rfData, "acres_per_op")) ###
+fertp$VAR = "Average farm size"                       
+
+chemp <- as.data.frame(partialPlot(rf_bs, rfData, "PNC"))
+chemp$VAR = "% natural cover" 
+
+labp <- as.data.frame(partialPlot(rf_bs, rfData, "fert"))
+labp$VAR = "Fertilizer ($/acre)" 
+
+machp <- as.data.frame(partialPlot(rf_bs, rfData, "BLACKP"))
+machp$VAR = "% acres operated by black farmers" 
+
+blp <- as.data.frame(partialPlot(rf_bs, rfData, "machinery"))
+blp$VAR = "Machinery ($/acre)" 
+
+top5 <- rbind.data.frame(fertp, chemp, labp, machp, blp, gvtp)
+
+top5_pp <- ggplot(top5) +
+  geom_line(aes(x = x, y = y, color = VAR), size = 1.2) +
+  project_theme +
+  theme(legend.title = element_blank(), legend.position = "right" ) +
+  labs(x = "Standardized values",
+       y = "Predicted weighted average")
+
+ggsave("./figs/pd_top5.png", width = 4, height = 3)
+```
+
+
+# Archive plots
+
+## Weighted average bw plots
+
+```{r}
+# Archive plots
+plt$variable[plt$variable == "fert"] <- "(a) Fertilizer ($/acre)"
+plt$variable[plt$variable == "chem"] <-  "(b) Chemicals ($/acre)"
+plt$variable[plt$variable == "machinery"] <-  "(c) Machinery ($/acre)"
+plt$variable[plt$variable == "labor_expense"] <-  "(d) Labor ($/acre)"
+plt$variable[plt$variable == "gvt_prog"] <-  "(e) Gvt. receipts ($/acre)"
+plt$variable[plt$variable == "insur_acres"] <-  "(f) Crop insurance (% operated acres)"
+plt$variable <- as.factor(plt$variable)
+
+input_bw <- ggplot(plt %>% filter(BS != "Average spot", value <4)) +
+  geom_boxplot(aes(x = variable, y = value, fill = BS, group = interaction(variable, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "",
+       title = "") +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  #facet_wrap(vars(variable), nrow = length(unique(plt$variable)), scales = "free") +
+  scale_y_continuous(labels = comma) + coord_flip() +
+  scale_x_discrete(limits = rev(levels(plt$variable)))
+
+# ggsave("./figs/inputs_wa.png", width = 6, height=6)
+```
+
+```{r}
+# dfs %>% group_by(BS) %>% summarize(med = median(BLACKP, na.rm=T))
+
+plt <- melt(dfscale, id.vars = c("BS"),
+            measure.vars = c("exp", "tenant", "occup", "acres_per_op")) %>%
+  filter(BS != "Average")
+plt$variable <- as.character(plt$variable)
+
+plt$variable[plt$variable == "exp"] <- "(a) Years farming experience"
+plt$variable[plt$variable == "occup"] <-  "(b) % farming as primary occupation"
+plt$variable[plt$variable == "tenant"] <-  "(c) % tenants"
+plt$variable[plt$variable == "acres_per_op"] <-  "(d) Average farm size"
+plt$variable <- as.factor(plt$variable)
+
+char_bw <- ggplot(plt %>% filter(BS != "Average spot", value <4)) +
+  geom_boxplot(aes(x = variable, y = value, fill = BS, group = interaction(variable, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "",
+       title = "") +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  #facet_wrap(vars(variable), nrow = length(unique(plt$variable)), scales = "free") +
+  scale_y_continuous(labels = comma) + coord_flip() +
+  scale_x_discrete(limits = rev(levels(plt$variable)))
+
+# ggsave("./figs/character_wa.png", width = 6, height=4)
+```
+
+```{r eval=F}
+race <- read.csv("./data/race.csv")
+#unique(race$Data.Item)
+race$Value[race$Value == "999"] <- NA
+race$Value <- as.numeric(gsub(",", "", race$Value))  
+
+black <- race %>%
+  filter(Data.Item == "OPERATORS, PRINCIPAL, BLACK OR AFRICAN AMERICAN - ACRES OPERATED") %>%
+  filter(!is.na(County.ANSI)) %>%
+  mutate(STATE = str_pad(as.character(State.ANSI), 2, side = "left", pad = "0"),
+         COUNTY = str_pad(as.character(County.ANSI), 3, side = "left", pad = "0"),
+         GEOID = as.factor(paste0(STATE,COUNTY)),
+         BLACK = Value,
+         YEAR = Year) %>%
+  select(YEAR, GEOID, BLACK) 
+
+h <- race %>%
+  filter(Data.Item == "OPERATORS, PRINCIPAL, HISPANIC - ACRES OPERATED"  ) %>%
+  filter(!is.na(County.ANSI)) %>%
+  mutate(STATE = str_pad(as.character(State.ANSI), 2, side = "left", pad = "0"),
+         COUNTY = str_pad(as.character(County.ANSI), 3, side = "left", pad = "0"),
+         GEOID = as.factor(paste0(STATE,COUNTY)),
+         HISP = Value,
+         YEAR = Year) %>%
+  select(YEAR, GEOID, HISP) 
+
+w <- race %>%
+  filter(Data.Item ==  "OPERATORS, PRINCIPAL, WHITE - ACRES OPERATED") %>%
+  filter(!is.na(County.ANSI)) %>%
+  mutate(STATE = str_pad(as.character(State.ANSI), 2, side = "left", pad = "0"),
+         COUNTY = str_pad(as.character(County.ANSI), 3, side = "left", pad = "0"),
+         GEOID = as.factor(paste0(STATE,COUNTY)),
+         WHITE = Value,
+         YEAR = Year) %>%
+  select(YEAR, GEOID, WHITE) 
+
+out <- merge(black, h, by = c("GEOID", "YEAR"), all=T)
+out <- merge(out, w, by = c("GEOID", "YEAR"), all=T)
+
+# divide by total operated acres to compute % operated acres
+ao <- read.csv("./data/acres.csv")
+ao$Value[ao$Value == "999"] <- NA
+ao$Value <- as.numeric(gsub(",", "", ao$Value))  
+ao <- ao %>%
+  filter(!is.na(County.ANSI)) %>%
+  mutate(STATE = str_pad(as.character(State.ANSI), 2, side = "left", pad = "0"),
+         COUNTY = str_pad(as.character(County.ANSI), 3, side = "left", pad = "0"),
+         GEOID = as.factor(paste0(STATE,COUNTY)),
+         ACRES_AG = Value,
+         YEAR = Year) %>%
+  select(YEAR, GEOID, ACRES_AG) 
+
+out <- merge(out, ao, by = c("GEOID", "YEAR"), all=T)
+
+# need to think about size of entire county?  Will bias results in really big counties... but WHITE consistently more than total ag acrea.
+
+# divide by total operated acres to compute % operated acres
+ao <- read.csv("./data/organic.csv")
+ao$Value[ao$Value == "999"] <- NA
+ao$Value <- as.numeric(gsub(",", "", ao$Value))  
+ao <- ao %>%
+  filter(!is.na(County.ANSI)) %>%
+  mutate(STATE = str_pad(as.character(State.ANSI), 2, side = "left", pad = "0"),
+         COUNTY = str_pad(as.character(County.ANSI), 3, side = "left", pad = "0"),
+         GEOID = as.factor(paste0(STATE,COUNTY)),
+         ORGANIC_ACRES = Value,
+         YEAR = Year) %>%
+  select(YEAR, GEOID, ORGANIC_ACRES) 
+
+out <- merge(out, ao, by = c("GEOID", "YEAR"), all = T)
+
+# load total ag area
+# ao <- read.csv("C:/Users/eburchf/OneDrive - Emory University/WF/Irrigation/data/ag_land_acres.csv")
+# ao$Value[ao$Value == "999"] <- NA
+# ao$Value <- as.numeric(gsub(",", "", ao$Value))  
+# ao <- ao %>%
+#   filter(!is.na(County.ANSI)) %>%
+#   mutate(STATE = str_pad(as.character(State.ANSI), 2, side = "left", pad = "0"),
+#          COUNTY = str_pad(as.character(County.ANSI), 3, side = "left", pad = "0"),
+#          GEOID = as.factor(paste0(STATE,COUNTY)),
+#          CL_ACRES = Value,
+#          YEAR = Year) %>%
+#   select(YEAR, GEOID, CL_ACRES) 
+
+# from BS
+std <- readRDS("./data/standardize.RDS")
+out <- merge(out, std, by = c("GEOID", "YEAR"), all = T)
+
+
+# out <- merge(out, ao, by = c("GEOID", "YEAR"), all = T) %>% filter(YEAR %in% c("2017", "2012"))
+out$BLACKP <- out$BLACK/out$OPERATED_ACRES * 100
+out$HISPP <- out$HISP/out$OPERATED_ACRES * 100
+out$WHITEP <- out$WHITE/out$OPERATED_ACRES * 100
+out$BIOP <- out$ORGANIC_ACRES/out$OPERATED_ACRES * 100
+
+saveRDS(out, "./out/race.RDS")
+```
+
+```{r}
+
+plt <- melt(dfs, id.vars = c("BS"),
+            measure.vars = c("BLACKP", "WHITEP", "HISPP", "female")) %>%
+  filter(BS != "Average")
+plt$variable <- as.character(plt$variable)
+
+plt$variable[plt$variable == "BLACKP"] <- "(a) Black farmers"
+plt$variable[plt$variable == "HISPP"] <-  "(b) Hispanic farmers"
+plt$variable[plt$variable == "female"] <-  "(c) Female farmers"
+plt$variable[plt$variable == "WHITEP"] <-  "(d) White farmers"
+
+race_bw <- ggplot(plt %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = variable, y = value, fill = BS, group = interaction(variable, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "% operated acres",
+       title = "") +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  #facet_wrap(vars(variable), nrow = length(unique(plt$variable)), scales = "free") +
+  scale_y_continuous(labels = comma) + coord_flip() +
+  scale_x_discrete(limits = rev(levels(plt$variable)))
+
+# ggsave("./figs/race_wa.png", width = 6, height=4)
+
+```
+
+
+```{r}
+plt <- melt(dfscale, id.vars = c("BS"),
+            measure.vars = c("AREA_MN_AG", "SDI", "PNC", "ED")) %>%
+  filter(BS != "Average")
+plt$variable <- as.character(plt$variable)
+
+plt$variable[plt$variable == "AREA_MN_AG"] <- "(a) Mean patch size"
+plt$variable[plt$variable == "ED"] <-  "(b) Edge density"
+plt$variable[plt$variable == "SDI"] <-  "(c) Shannon Diversity of agriculture"
+plt$variable[plt$variable == "PNC"] <-  "(d) Percent natural cover"
+
+ggplot(plt %>% filter(BS != "Average spot")) +
+  geom_boxplot(aes(x = variable, y = value, fill = BS, group = interaction(variable, BS)), outlier.size = 0.5,
+               outlier.alpha = 0.5) +
+  project_theme +
+  labs(x = "",
+       y = "",
+       title = "") +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values = c("#317EBE", "#4C9A2A"), name = "") +
+  #facet_wrap(vars(variable), nrow = length(unique(plt$variable)), scales = "free") +
+  scale_y_continuous(labels = comma) + coord_flip() +
+  scale_x_discrete(limits = rev(levels(plt$variable)))
+
+ggsave("./figs/landscape_wa.png", width = 6, height=4)
+```
+
+
+## Weighted difference
+
+```{r}
+# ACROSS crop bright spots
+dfs <- dfus %>%
+  group_by(GEOID) %>%
+  summarize(N = sum(PROP_CROP, na.rm=T),
+    #N = length(DIFF[!is.na(DIFF)]),
+            TOTAL = sum(WD, na.rm=T)) %>%
+  mutate(WAVG = TOTAL/N)
+dfa <-  dfus %>%
+    select(-c(BS, geometry, WD, PROP_CROP, CROP, CCROP, Z, DIFF, STATEFP, FRR.x, FRR.y)) %>% # remove null model attr
+    group_by(GEOID) %>% 
+    summarize_all(funs(mean), na.rm=T)
+st_geometry(dfs) <- NULL
+st_geometry(dfa) <- NULL
+dfs <- merge(county, dfs, by = "GEOID", all=T)
+dfs <- merge(dfs, dfa, by = "GEOID", all = T)
+dfs$BS <- ifelse(dfs$WAVG > mean(dfs$WAVG, na.rm=T) + 1.5*sd(dfs$WAVG, na.rm=T), "Bright spot", NA)
+dfs$BS[dfs$WAVG < mean(dfs$WAVG, na.rm=T) - 1.5*sd(dfs$WAVG, na.rm=T)] <- "Dark spot"
+dfs$BS[is.na(dfs$BS)] <- "Average spot"
+
+limit <- max(abs(dfs$WAVG), na.rm=T) * c(-1, 1)
+
+ggplot() +
+  geom_sf(data = dfs, color = "transparent", size = 0.05, aes(fill = WAVG)) +
+  geom_sf(data = state, color = "#A9A9A9", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = NA, alpha = 0.5) +
+  project_theme +
+  scale_fill_gradient2(low = "#654321", mid = "#f5f5f5", high = "#000080", midpoint = 0, na.value = "#D3D3D3", 
+                       limit = limit) +
+  labs(fill = "",
+       title = "",
+       subtitle = "")
+
+ggsave("./figs/weighted_diff_avg.png", plot = last_plot())
+```
+

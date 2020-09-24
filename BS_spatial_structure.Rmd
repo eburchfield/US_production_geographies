@@ -1,0 +1,215 @@
+---
+title: "BS_spatial_structure"
+author: "Dr. Burchfield"
+output: html_document
+---
+```{r message=FALSE, warning=FALSE, echo=F}
+# set up
+source("BS_func.R")
+source("BS_load.R")
+library(spdep)
+library(sp)
+
+select <- dplyr::select
+```
+
+## Spatial structure {.tabset .tabset-fade}
+
+Spatial autocorrelation based on a queen neighborhood with a inverse-distance weighted row-standardized weights matrix.
+
+Notes from labs (Area analysis and interpolation):
+
+* The Monte Carlo method generates simulated data via random sampling. In this case, our Monte Carlo simulation randomly assigns values to the polygons in our cty shapefile. In each iteration of the simulation, Moran’s I is computed. This allows us to generate a distribution of expected Moran’s I values. We can compare these expected values for random data to our actual values to determine whether our data exhibits spatial autocorrelation.
+
+* Here we ran 99 simulations (nsim = 99) using our cty_corn$Yield data and our rstd weights object. We can compare the randomly generated data to our actual data to determine whether our data exhibits spatial autocorrelation.
+
+* Remember that Global Moran’s I is a global test of spatial autocorrelation… a sort of average across multiple distances (or lags) between polygons within the region of interest. It can also be helpful to assess how spatial autocorrelation changes as a function of distance. A correlogram can be used to help us visualize autocorrelation as a function of distance.8 As distance between polygons (x-axis) increases, how does our spatial autocorrelation change (y-axis)? The sp.correlogram function from the spdep package is a great tool to quickly visualize changes in spatial autocorrelation at increasing spatial lags.
+
+* The lags here are computed as neighbor distances based on our rook object. We can specify that we want sp.correlogram() to compute Moran’s I at each lag by adding the argument method = "I". We can also compute Geary’s C (another global indicator of spatial autocorrelation) or simple correlation. Like the moran.test() function, this function assumes randomization rather than normality. There are several other packages you can use to compute correlograms. 
+
+```{r message=FALSE, warning=FALSE, echo=F}
+wong_colors <- c("#E69F00", "#55B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+library(RColorBrewer)
+crops <- as.factor(c("corn", "soy", "wwheat", "alfalfa", "sorghum", "cotton", "hay"))
+clean_crops <- as.factor(c("Corn", "Soy", "Winter wheat", "Alfalfa", "Sorghum", "Cotton", "Hay"))
+names(wong_colors) <- clean_crops
+colors_f <- scale_fill_manual(name = "CROPS", values = wong_colors)
+colors_c <- scale_color_manual(name = "CROPS", values = wong_colors)
+```
+
+```{r message=FALSE, warning=FALSE, echo=F, eval=F}
+moran_list <- list()
+cg_list <- list()
+
+for (i in 1:length(crops)) {
+  
+  print(crops[[i]])
+  crop <- crops[[i]]
+  county_sub <- prep_data(crop)[[2]]
+  out <- prep_attr_data(crop)
+  df <- out[[1]]
+  
+  county_sp <- as(county_sub, "Spatial")
+  county_sp <- merge(county_sp, df, by = "GEOID")
+  county_sp <- county_sp[!is.na(county_sp$DIFF),]
+
+  # inverse distance
+  queen <- poly2nb(county_sp)
+  dists <- nbdists(queen, coordinates(county_sp))
+  idw <- lapply(dists, function(x) 1/(x/1000))
+  idwlist <- nb2listw(queen, glist = idw, zero.policy = T)
+  # gmoran <- moran.test(county_sp$DIFF, listw = idwlist, randomisation = T, zero.policy = T)
+  moran <- moran.mc(county_sp$DIFF, idwlist, nsim = 1000, zero.policy = T)
+  morandf <- cbind.data.frame(MI = moran$statistic, MP = moran$p.value, CROP = crop)
+  rownames(morandf) <- NULL
+  moran_list[[i]] <- morandf
+  
+  # correlogram
+  cgm <- sp.correlogram(queen, county_sp$DIFF, order = 25, method = "I", zero.policy = T, randomisation=T)
+  cg_list[[i]] <- cgm
+
+}
+
+saveRDS(cg_list, "./out/correlograms.RDS")
+saveRDS(moran_list, "./out/morans.RDS")
+```
+
+
+```{r echo=F}
+m <- readRDS("./out/morans.RDS")
+c <- readRDS("./out/correlograms.RDS")
+
+m <- do.call("rbind.data.frame", m)
+m$CROPS <- clean_crops
+
+ggplot() +
+  geom_bar(data = m,aes(x = reorder(CROP, desc(MI)), y = MI, fill = CROPS), stat = "identity") +
+  project_theme +
+  labs(x = "",
+       y = "Moran's I",
+       title = "All crops have significant, positive spatial autocorrelation") +
+  colors_f +
+  theme(legend.position = "none") 
+```
+
+
+```{r echo=F}
+plot(c[[1]], main = clean_crops[[1]])
+plot(c[[2]], main = clean_crops[[2]])
+plot(c[[3]], main = clean_crops[[3]])
+plot(c[[4]], main = clean_crops[[4]])
+plot(c[[5]], main = clean_crops[[5]])
+plot(c[[6]], main = clean_crops[[6]])
+plot(c[[7]], main = clean_crops[[7]])
+```
+```{r echo=F}
+ns_lag <- list()
+for (i in 1:length(c)) {
+  
+  t <- as.data.frame(c[[i]]$res)
+  ns_lag[[i]] <- min(which(t$V1 < 0))
+  
+}
+
+ns_lag <- do.call("rbind.data.frame", ns_lag)
+ns_lag$CROP <- clean_crops
+colnames(ns_lag) <- c("LAG", "CROPS")
+
+ggplot() +
+  geom_bar(data = ns_lag,aes(x = reorder(CROPS, desc(LAG)), y = LAG, fill = CROPS), stat = "identity") +
+  project_theme +
+  labs(x = "",
+       y = "Lag",
+       title = "Lag at which Moran's I becomes insignificant",
+       subtitle = "So higher lags indicate persistence across space") +
+  colors_f +
+  coord_flip() + theme(legend.position = "none") 
+
+
+
+
+```
+
+```{r message=F, warning=F, echo=F}
+lisa <- function(crop) {
+  
+  county_sub <- prep_data(crop)[[2]]
+  out <- prep_attr_data(crop)
+  df <- out[[1]]
+  
+  county_sp <- as(county_sub, "Spatial")
+  county_sp <- merge(county_sp, df, by = "GEOID")
+  county_sp <- county_sp[!is.na(county_sp$DIFF),]
+
+  # inverse distance
+  queen <- poly2nb(county_sp)
+  dists <- nbdists(queen, coordinates(county_sp))
+  idw <- lapply(dists, function(x) 1/(x/1000))
+  idwlist <- nb2listw(queen, glist = idw, zero.policy = T)
+  
+  l <- localmoran(county_sp$DIFF, idwlist, p.adjust.method = "bonferroni") # bonferroni correction in which the p-values are multiplied by the number of comparisons
+  county_sp$locali <- l[,1]
+  county_sp$localp <- l[,5]
+  county_sp$cl <- as.factor(ifelse(county_sp$localp <= 0.05, "Clustered", "Not clustered"))
+  
+  #spplot(county_sp, "locali", main="Local Moran's I", at=quantile(county_sp$locali, na.rm=T), col.regions=brewer.pal(n=4, "RdBu"))
+  
+  #spplot(county_sp, "cl", main = "Local Moran Clusters", col.regions=c(2,0))
+  
+  #Local Getis-Org G analysis
+localg<-localG(county_sp$DIFF, idwlist)
+county_sp$localg<-as.numeric(localg)
+
+return(county_sp)
+
+#Plots
+#spplot(county_sp, "localg", main="Local Geary's G", at=c(-4, -3,-2,-1,0,1,2,3, 4), col.regions=brewer.pal(n=8, "RdBu"))
+
+}
+
+plot_lisa <- function(crop) {
+  
+  out <- lisa(crop)
+  p1 <- spplot(out, "locali", main=paste0("Local Moran's I: ", crop), at=quantile(out$locali, na.rm=T), 
+       col.regions=brewer.pal(n=4, "RdBu"))
+  p2 <- spplot(out, "cl", main = paste0("Local Moran's I (significant clusters): ", crop), col.regions = c(2,0))
+  l <- list(p1, p2)
+  return(l)
+
+}
+
+county_sub <- prep_data("corn")[[2]]
+corn_lisa <- plot_lisa("corn")
+soy_lisa <- plot_lisa("soy")
+wwheat_lisa <- plot_lisa("wwheat")
+sorghum_lisa <- plot_lisa("sorghum")
+hay_lisa <- plot_lisa("hay")
+alfalfa_lisa <- plot_lisa("alfalfa")
+cotton_lisa <- plot_lisa("cotton")
+
+
+
+```
+
+```{r message=F, warning=F, echo=F}
+corn_lisa[[1]]
+corn_lisa[[2]]
+soy_lisa[[1]]
+soy_lisa[[2]]
+wwheat_lisa[[1]]
+wwheat_lisa[[2]]
+sorghum_lisa[[1]]
+sorghum_lisa[[2]]
+hay_lisa[[1]]
+hay_lisa[[2]]
+alfalfa_lisa[[1]]
+alfalfa_lisa[[2]]
+cotton_lisa[[1]]
+cotton_lisa[[2]]
+
+
+```
+
+
+
+

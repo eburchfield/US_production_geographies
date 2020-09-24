@@ -1,0 +1,516 @@
+---
+title: "BS Model Comparison"
+author: "Dr. Burchfield"
+output: html_document
+---
+
+## Results {.tabset .tabset-fade}
+
+### Model speficiation
+
+```{r eval=F}
+  out <- prep_data(crop)
+  null <- out[[1]]
+  county_sub <- out[[2]]
+  hadj <- build_adj_matrix(county_sub)
+  
+  null <- null %>% mutate_at(c("GDD", "TP"), ~inla.group(., n = 20, method = "quantile"))
+  u <- sd(null$YIELD, na.rm = T)  
+  
+  apar <- 0.5 
+  lmod <- lm(YIELD ~ GDD + TP  + T_CEC_SOIL + T_OC + T_PH_H2O + T_ESP + 
+               PERC_IRR + 
+               factor(YEAR), data=  null)
+  bpar <- apar*var(residuals(lmod))
+  lgprior <- list(prec = list(prior = "loggamma", param = c(apar, bpar))) 
+  
+  formula <- YIELD ~ 1 +  
+    f(ID, model="bym2", 
+      graph=hadj,
+      scale.model=TRUE,
+      constr = TRUE) +
+    f(FRR, model = "iid", hyper = lgprior) +
+    f(GDD, model = "rw2", 
+      scale.model = T,
+      hyper = list(theta = list(prior = "pc.prec", 
+                                param = c(u, 0.01)))) +
+    f(TP, model = "rw2", 
+      scale.model = T,
+      hyper = list(theta = list(prior = "pc.prec", 
+                                param = c(u, 0.01)))) +
+    PERC_IRR +
+    T_CEC_SOIL + T_OC + T_PH_H2O + T_ESP + 
+    factor(YEAR)
+  
+```
+
+
+```{r echo=F, message=F, warning=F}
+library(tidyverse)
+source("BS_load.R")
+source("BS_func.R")
+mcorn <- readRDS("./out/models/mf_corn.RDS")
+dcorn <- readRDS("./out/models/df_corn.RDS")
+
+msoy <- readRDS("./out/models/mf_soy.RDS")
+dsoy <- readRDS("./out/models/df_soy.RDS")
+
+mwwheat <- readRDS("./out/models/mf_wwheat.RDS")
+dwwheat <- readRDS("./out/models/df_wwheat.RDS")
+
+malfalfa <- readRDS("./out/models/mf_alfalfa.RDS")
+dalfalfa <- readRDS("./out/models/df_alfalfa.RDS")
+
+mhay <- readRDS("./out/models/mf_hay.RDS")
+dhay <- readRDS("./out/models/df_hay.RDS")
+
+msorghum <- readRDS("./out/models/mf_sorghum.RDS")
+dsorghum <- readRDS("./out/models/df_sorghum.RDS")
+
+mcotton <- readRDS("./out/models/mf_cotton.RDS")
+dcotton <- readRDS("./out/models/df_cotton.RDS")
+
+mlist <- list(mcorn, msoy, mwwheat, malfalfa, msorghum, mcotton, mhay)
+
+# crop colors
+#https://www.nature.com/articles/nmeth.1618
+wong_colors <- c("#E69F00", "#55B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+library(RColorBrewer)
+
+crops <- as.factor(c("corn", "soy", "wwheat", "alfalfa", "sorghum", "cotton", "hay"))
+clean_crops <- as.factor(c("Corn", "Soy", "Winter wheat", "Alfalfa", "Sorghum", "Cotton", "Hay"))
+names(wong_colors) <- clean_crops
+colors_f <- scale_fill_manual(name = "CROPS", values = wong_colors)
+colors_c <- scale_color_manual(name = "CROPS", values = wong_colors)
+```
+
+### Performance
+
+```{r echo=F}
+r2 <- rbind.data.frame(dcorn$R2, dsoy$R2, dwwheat$R2, dalfalfa$R2, dsorghum$R2, dcotton$R2, dhay$R2)
+mse <- rbind.data.frame(dcorn$MSE, dsoy$MSE, dwwheat$MSE, dalfalfa$MSE, dsorghum$MSE, dcotton$MSE, dhay$MSE)
+dic <- rbind.data.frame(dcorn$DIC, dsoy$DIC, dwwheat$DIC, dalfalfa$DIC, dsorghum$DIC, dcotton$DIC, dhay$DIC)
+cpo <- rbind.data.frame(dcorn$CPO, dsoy$CPO, dwwheat$CPO, dalfalfa$CPO, dsorghum$CPO, dcotton$CPO, dhay$CPO)
+
+perf <- cbind.data.frame(clean_crops, r2, mse, dic, cpo)
+colnames(perf) <- c("CROP", "R2", "MSE", "DIC", "CPO")
+
+ggplot(data = perf) +
+  geom_bar(aes(x = reorder(CROP, desc(R2)), y = R2, fill = CROP), stat = "identity") +
+  project_theme +
+  labs(title = "R2 across models",
+       x = "",
+       y = "",
+       fill = "") +
+  theme(legend.position = "none") +
+  colors_f
+
+```
+
+```{r echo=F}
+ggplot(data = perf) +
+  geom_bar(aes(x = reorder(CROP, desc(MSE)), y = MSE, fill = CROP), stat = "identity") +
+  project_theme +
+  labs(title = "MSE across models",
+       x = "",
+       y = "",
+       fill = "") +
+  theme(legend.position = "none") +
+  colors_f
+```
+
+Models with smaller DIC preferred to models with larger DIC.  DIC is useful for model comparison, read more p. 170.
+
+```{r echo=F}
+ggplot(data = perf) +
+  geom_bar(aes(x = reorder(CROP, desc(DIC)), y = DIC, fill = CROP), stat = "identity") +
+  project_theme +
+  labs(title = "DIC across models",
+       x = "",
+       y = "",
+       fill = "") +
+  theme(legend.position = "none") +
+  colors_f
+```
+
+Conditional predictive ordinate, LOOCV, compares competitive models in terms of predictive performance, with larger values denoting better fit (see 5.6.1, p. 166).
+
+```{r echo=F}
+ggplot(data = perf) +
+  geom_bar(aes(x = reorder(CROP, desc(CPO)), y = CPO, fill = CROP), stat = "identity") +
+  project_theme +
+  labs(title = "CPO across models",
+       x = "",
+       y = "",
+       fill = "") +
+  theme(legend.position = "none") +
+  colors_f
+```
+ 
+Performance table:
+
+```{r echo=F}
+perf_sub <- perf %>% filter(!CROP %in% c("Cotton", "Sorghum")) %>% arrange(CROP)
+
+perf_sub
+
+```
+
+ 
+ 
+### Coefficients per model
+
+```{r echo=F}
+plot_coef(mcorn) + ggtitle("Corn")
+```
+
+```{r echo=F}
+plot_coef(msoy) + ggtitle("Soy")
+```
+
+```{r echo=F}
+plot_coef(mwwheat) + ggtitle("Winter wheat")
+```
+
+```{r echo=F}
+plot_coef(malfalfa) + ggtitle("Alfalfa")
+```
+
+```{r echo=F}
+plot_coef(mhay) + ggtitle("Hay")
+```
+
+```{r echo=F}
+plot_coef(mcotton) + ggtitle("Cotton")
+```
+
+```{r echo=F}
+plot_coef(msorghum) + ggtitle("Sorghum")
+```
+
+### Coefficients all models
+
+
+```{r echo=F}
+clean_crops <- as.factor(c("Corn", "Soy", "Winter wheat", "Alfalfa", "Hay"))
+mlist <- list(mcorn, msoy, mwwheat, malfalfa, mhay)
+
+plot_all_coef <- function(mlist) {
+  
+  out <- list()
+  
+  for (i in 1:length(mlist)) {
+    
+    model <- mlist[[i]]
+    coef <- model$summary.fixed[,c(1, 3, 5)] # mean, 0.025, 0.985
+    colnames(coef) <- c("MEAN", "LOW", "HIGH")
+    coef$VARS <- rownames(coef)
+    coef <- coef %>% filter(VARS != "(Intercept)")
+    # drop year factors for now and intercept
+    # coef <- coef[2:9,]
+    coef$CROP <- clean_crops[i]
+    out[[i]] <- coef
+  
+    
+    
+  }
+  
+  out <- do.call("rbind.data.frame", out)
+  out$VOI <- NA
+  out$VOI[out$VARS == "PERC_IRR"] <- "% ag. land irrigated"
+  out$VOI[out$VARS == "PERC_AG"] <- "% agricultural land"
+  out$VOI[out$VARS == "T_CEC_SOIL"] <- "Cation exchange capacity"
+  out$VOI[out$VARS == "T_OC"] <- "Topsoil organic carbon"
+  out$VOI[out$VARS == "T_PH_H2O"] <- "Topsoil pH"
+  out$VOI[out$VARS == "T_ESP"] <- "Topsoil salinity"
+  out$VOI[out$VARS == "factor(YEAR)2009"] <- "y2009"
+  out$VOI[out$VARS == "factor(YEAR)2010"] <- "y2010"
+  out$VOI[out$VARS == "factor(YEAR)2011"] <- "y2011"
+  out$VOI[out$VARS == "factor(YEAR)2012"] <- "y2012"
+  out$VOI[out$VARS == "factor(YEAR)2013"] <- "y2013"
+  out$VOI[out$VARS == "factor(YEAR)2014"] <- "y2014"
+  out$VOI[out$VARS == "factor(YEAR)2015"] <- "y2015"
+  out$VOI[out$VARS == "factor(YEAR)2016"] <- "y2016"
+  out$VOI[out$VARS == "factor(YEAR)2017"] <- "y2017"
+  out$VOI[out$VARS == "factor(YEAR)2018"] <- "y2018"
+  
+  ggplot(out %>% filter(!VARS %in% c("(Intercept)"))) +
+    geom_errorbarh(height = 0, aes(xmin = LOW, xmax = HIGH, 
+                                   y = VOI, color = CROP)) +
+    project_theme +
+    geom_point(aes(x = MEAN, y = VOI, color = CROP), size = 2) +
+    geom_vline(xintercept = 0) +
+    labs(x = "",
+         y = "",
+         color = "") +
+    colors_c +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
+  
+  
+}
+
+plot_all_coef(mlist) + theme(text = element_text(size = 20))
+
+ggsave("./figs/coefficients.png", width = 15, height = 10)
+```
+
+
+Splitting out time:
+
+
+```{r echo=F}
+clean_crops <- as.factor(c("Corn", "Soy", "Winter wheat", "Alfalfa", "Hay"))
+mlist <- list(mcorn, msoy, mwwheat, malfalfa, mhay)
+
+plot_all_coef <- function(mlist) {
+  
+  out <- list()
+  
+  for (i in 1:length(mlist)) {
+    
+    model <- mlist[[i]]
+    coef <- model$summary.fixed[,c(1, 3, 5)] # mean, 0.025, 0.985
+    colnames(coef) <- c("MEAN", "LOW", "HIGH")
+    coef$VARS <- rownames(coef)
+    coef <- coef %>% filter(VARS != "(Intercept)")
+    # drop year factors for now and intercept
+    # coef <- coef[2:9,]
+    coef$CROP <- clean_crops[i]
+    out[[i]] <- coef
+  
+    
+    
+  }
+  
+  out <- do.call("rbind.data.frame", out)
+  out$VOI <- NA
+  out$VOI[out$VARS == "PERC_IRR"] <- "% ag. land irrigated"
+  out$VOI[out$VARS == "PERC_AG"] <- "% agricultural land"
+  out$VOI[out$VARS == "T_CEC_SOIL"] <- "Cation exchange capacity"
+  out$VOI[out$VARS == "T_OC"] <- "Topsoil organic carbon"
+  out$VOI[out$VARS == "T_PH_H2O"] <- "Topsoil pH"
+  out$VOI[out$VARS == "T_ESP"] <- "Topsoil sodicity"
+  out$VOI[out$VARS == "factor(YEAR)2009"] <- "y2009"
+  out$VOI[out$VARS == "factor(YEAR)2010"] <- "y2010"
+  out$VOI[out$VARS == "factor(YEAR)2011"] <- "y2011"
+  out$VOI[out$VARS == "factor(YEAR)2012"] <- "y2012"
+  out$VOI[out$VARS == "factor(YEAR)2013"] <- "y2013"
+  out$VOI[out$VARS == "factor(YEAR)2014"] <- "y2014"
+  out$VOI[out$VARS == "factor(YEAR)2015"] <- "y2015"
+  out$VOI[out$VARS == "factor(YEAR)2016"] <- "y2016"
+  out$VOI[out$VARS == "factor(YEAR)2017"] <- "y2017"
+  out$VOI[out$VARS == "factor(YEAR)2018"] <- "y2018"
+  
+  ggplot(out %>% filter(!VARS %in% c("(Intercept)"), 
+                        !VOI %in% c("y2009", "y2010", "y2011", "y2012", "y2013", "y2014", "y2015", "y2016", "y2017", "y2018"))) +
+    geom_errorbarh(height = 0, aes(xmin = LOW, xmax = HIGH, 
+                                   y = reorder(VOI, LOW), color = CROP), position = position_dodge(width = 0.3)) +
+    project_theme +
+    geom_point(aes(x = MEAN, y = reorder(VOI, LOW), color = CROP), size = 2, alpha = 0.8, 
+               position = position_dodge(width = 0.3)) +
+    geom_vline(xintercept = 0) +
+    labs(x = "",
+         y = "",
+         color = "") +
+    colors_c +
+  theme(legend.position = "right",
+        legend.title = element_blank()) 
+  
+  
+}
+
+plot_all_coef(mlist) + theme(text = element_text(size = 12))
+
+ggsave("./figs/coefficients_notime.png", width = 7, height = 3)
+```
+
+
+Visualizing time:
+
+
+```{r echo=F}
+clean_crops <- as.factor(c("Corn", "Soy", "Winter wheat", "Alfalfa", "Hay"))
+mlist <- list(mcorn, msoy, mwwheat, malfalfa, mhay)
+
+plot_all_coef <- function(mlist) {
+  
+  out <- list()
+  
+  for (i in 1:length(mlist)) {
+    
+    model <- mlist[[i]]
+    coef <- model$summary.fixed[,c(1, 3, 5)] # mean, 0.025, 0.985
+    colnames(coef) <- c("MEAN", "LOW", "HIGH")
+    coef$VARS <- rownames(coef)
+    coef <- coef %>% filter(VARS != "(Intercept)")
+    # drop year factors for now and intercept
+    # coef <- coef[2:9,]
+    coef$CROP <- clean_crops[i]
+    out[[i]] <- coef
+  
+    
+    
+  }
+  
+  out <- do.call("rbind.data.frame", out)
+  out$VOI <- NA
+  out$VOI[out$VARS == "PERC_IRR"] <- "% ag. land irrigated"
+  out$VOI[out$VARS == "PERC_AG"] <- "% agricultural land"
+  out$VOI[out$VARS == "T_CEC_SOIL"] <- "Cation exchange capacity"
+  out$VOI[out$VARS == "T_OC"] <- "Topsoil organic carbon"
+  out$VOI[out$VARS == "T_PH_H2O"] <- "Topsoil pH"
+  out$VOI[out$VARS == "T_ESP"] <- "Topsoil salinity"
+  out$VOI[out$VARS == "factor(YEAR)2009"] <- "2009"
+  out$VOI[out$VARS == "factor(YEAR)2010"] <- "2010"
+  out$VOI[out$VARS == "factor(YEAR)2011"] <- "2011"
+  out$VOI[out$VARS == "factor(YEAR)2012"] <- "2012"
+  out$VOI[out$VARS == "factor(YEAR)2013"] <- "2013"
+  out$VOI[out$VARS == "factor(YEAR)2014"] <- "2014"
+  out$VOI[out$VARS == "factor(YEAR)2015"] <- "2015"
+  out$VOI[out$VARS == "factor(YEAR)2016"] <- "2016"
+  out$VOI[out$VARS == "factor(YEAR)2017"] <- "2017"
+  out$VOI[out$VARS == "factor(YEAR)2018"] <- "2018"
+  
+  outs <- out %>% filter(VOI %in% c("2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018"))
+  outs$VOI <- as.numeric(as.character(outs$VOI))
+  
+  ggplot(outs, aes(x = VOI, y = MEAN, group = CROP, color = CROP)) +
+    geom_line() +
+    geom_point() +
+    geom_errorbar(aes(ymin = LOW, ymax = HIGH), width = 0.2) +
+    project_theme +
+    labs(x = "",
+         y = "Mean estimated effect",
+         color = "")+
+    colors_c +
+  theme(legend.position = "right",
+        legend.title = element_blank()) +
+    scale_x_continuous(breaks = 2009:2018, labels = 2009:2018)
+  
+  
+
+  
+  
+}
+
+plot_all_coef(mlist) + theme(text = element_text(size = 16))
+
+ggsave("./figs/coefficients_time_only.png", width = 10, height = 5)
+```
+
+
+
+### Nonlinear effects
+
+```{r echo=F}
+variable = "GDD"
+
+crops <-crops[!crops %in% c("sorghum", "cotton")]
+clean_crops <- clean_crops[!clean_crops %in% c("Sorghum", "Cotton")]
+
+plot_nle <- function(variable) {
+  
+  out_list <- list()
+  for (i in 1:length(crops)) {
+
+    df <- mlist[[i]]$summary.random[[variable]][,c(1,4:6)]
+    df$CROPS <- crops[[i]]
+    df$CROP_NAME <- clean_crops[[i]]
+    out_list[[i]] <- df
+    
+  }
+  nle <- do.call("rbind.data.frame", out_list)
+  
+  plt <- ggplot(data = nle) + 
+    geom_line(aes(x = ID, y = `0.5quant`, group = CROP_NAME)) +
+    geom_ribbon(aes(x = ID, y = `0.5quant`, ymin = `0.025quant`, ymax = `0.975quant`, fill = CROP_NAME), alpha = 0.7) +
+    project_theme +
+    colors_f +
+    labs(x = variable, 
+         y = "Effect on yield (standardized)") +
+    theme(legend.title = element_blank())
+  
+  return(plt)
+  
+}
+
+plot_nle("GDD") + xlab("Growing degree days (standardized)")
+```
+
+
+```{r echo=F}
+plot_nle("TP") + xlab("Total precipitation (standardized)") + ylab("")
+```
+
+Final plots:
+
+```{r echo=F, message=F, warning=F}
+library(ggpubr)
+gdd <- plot_nle("GDD") + xlab("Growing degree days (standardized)") + theme(text = element_text(size = 20))
+tp <- plot_nle("TP") + xlab("Total precipitation (standardized)") + ylab("") + theme(text = element_text(size = 20))
+
+ggarrange(gdd, tp, labels = c("A", "B"), ncol = 2, nrow = 1, common.legend = T, legend = "bottom")
+
+ggsave("./figs/nonlinear_climate.png", plot = last_plot(), width = 16, height = 8)
+
+```
+
+### Aggregate Z-scores
+
+Note that for now, this doesn't deal with missing data for a particular crop.  The second plot shows the number of crops for each county.
+
+```{r echo=F, message=F, warning=F}
+out_list <- list()
+for (i in 1:length(crops)) {
+  train <- prep_data(crops[[i]])[[1]]
+  county_sub <- prep_data(crops[[i]])[[2]]
+  diff <- compute_diff(mlist[[i]], train, "FRR")
+  diff <- cbind.data.frame(diff$GEOID, diff$DIFF, diff$Z)
+  colnames(diff) <- c("GEOID", "DIFF", "Z")
+  diff$CROP <- crops[[i]]
+  out_list[[i]] <- diff
+}
+out <- do.call("rbind.data.frame", out_list)
+out_sum <- out %>% group_by(GEOID) %>% summarize(ZTOTAL = sum(Z),
+                                                 N = n())
+out_sum <- merge(county, out_sum, by = "GEOID")
+
+ggplot() +
+  geom_sf(data = out_sum, color = "transparent", size = 0.05, aes(fill = ZTOTAL)) +
+  geom_sf(data = state, color = "grey", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = "transparent") +
+  theme_minimal() +
+  scale_fill_gradient2(low = "#d8b365", mid = "#f5f5f5", high = "#5ab4ac", midpoint = 0, na.value = "grey50") +
+  labs(fill = "",
+       title = "Aggregate Z-scores of difference",
+       subtitle = "(Built for each region, with county - regional means)")
+
+```
+
+```{r echo=F, message=F, warning=F}
+ggplot() +
+  geom_sf(data = out_sum, color = "transparent", size = 0.05, aes(fill = N)) +
+  geom_sf(data = state, color = "grey", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = "transparent") +
+  theme_minimal() +
+  scale_fill_gradient2(low = "#d8b365", mid = "#f5f5f5", high = "#5ab4ac", midpoint = 0, na.value = "grey50") +
+  labs(fill = "",
+       title = "Number of crops cultivated in each county")
+```
+
+```{r echo=F, message=F, warning=F}
+out_sum$AVG_Z <- out_sum$ZTOTAL/out_sum$N
+
+ggplot() +
+  geom_sf(data = out_sum, color = "transparent", size = 0.05, aes(fill = AVG_Z)) +
+  geom_sf(data = state, color = "grey", fill = NA, alpha = 0.1) +
+  geom_sf(data = frr_shp, size = 1, fill = "transparent") +
+  theme_minimal() +
+  scale_fill_gradient2(low = "#d8b365", mid = "#f5f5f5", high = "#5ab4ac", midpoint = 0, na.value = "grey50") +
+  labs(fill = "",
+       title = "Average Z-score",
+       subtitle = "Total Z-score divided by number of crops observed in county")
+```
+
